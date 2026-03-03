@@ -2,9 +2,8 @@
 
 import { useSearchParams, useRouter } from 'next/navigation';
 import { useEffect, useState, useCallback, Suspense } from 'react';
-import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { useWallet } from '@solana/wallet-adapter-react';
 import { useWalletModal } from '@solana/wallet-adapter-react-ui';
-import { Transaction, SystemProgram, PublicKey } from '@solana/web3.js';
 import ScoreRing from '@/components/ScoreRing';
 import { BADGES, PERSONALITIES } from '@/lib/constants';
 
@@ -44,9 +43,8 @@ function ProfileContent() {
   const router = useRouter();
   const walletParam = searchParams.get('wallet') || '';
 
-  const { publicKey, sendTransaction, connected } = useWallet();
+  const { publicKey, signMessage, connected } = useWallet();
   const { setVisible } = useWalletModal();
-  const { connection } = useConnection();
 
   const [input, setInput] = useState('');
   const [data, setData] = useState<AnalysisResult | null>(null);
@@ -98,7 +96,10 @@ function ProfileContent() {
   }
 
   async function handleVerify() {
-    if (!publicKey || !data) return;
+    if (!publicKey || !data || !signMessage) {
+      setVerifyError('Your wallet does not support message signing. Try Phantom or Solflare.');
+      return;
+    }
 
     if (publicKey.toBase58() !== data.wallet) {
       setVerifyError('Connected wallet doesn\'t match the analyzed wallet. Connect the correct wallet.');
@@ -108,19 +109,10 @@ function ProfileContent() {
     setVerifying(true);
     setVerifyError('');
     try {
-      const tx = new Transaction().add(
-        SystemProgram.transfer({
-          fromPubkey: publicKey,
-          toPubkey: publicKey,
-          lamports: 0,
-        }),
-      );
-      tx.feePayer = publicKey;
-      const { blockhash } = await connection.getLatestBlockhash();
-      tx.recentBlockhash = blockhash;
-
-      const signature = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(signature, 'confirmed');
+      const message = `MERIK verify: ${data.wallet}`;
+      const messageBytes = new TextEncoder().encode(message);
+      const signatureBytes = await signMessage(messageBytes);
+      const signature = btoa(String.fromCharCode(...Array.from(signatureBytes)));
 
       const personality = PERSONALITIES.find((p) => p.id === data.personalityId);
       const earnedBadges = BADGES.filter((b) => data.badges.includes(b.id));
@@ -130,6 +122,7 @@ function ProfileContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           wallet: data.wallet,
+          message,
           signature,
           score: data.score,
           badges: earnedBadges.length,
@@ -224,7 +217,7 @@ function ProfileContent() {
                     {isOwnWallet ? 'Verify ownership to join the Leaderboard' : 'This is your wallet? Verify to join the Leaderboard'}
                   </div>
                   <div className="text-xs text-muted">
-                    Sign an empty transaction to prove you own this wallet. Top 3 earn weekly fee rewards.
+                    Sign a message to prove you own this wallet. Top 3 earn weekly fee rewards.
                   </div>
                 </div>
                 {!connected ? (
