@@ -10,25 +10,52 @@ export interface LeaderboardEntry {
   verifiedAt: string;
 }
 
-const DATA_DIR = path.join(process.cwd(), 'data');
-const LB_FILE = path.join(DATA_DIR, 'leaderboard.json');
+// Try writable locations: /tmp works in Vercel/Lambda; cwd/data for local
+const CANDIDATES = [
+  '/tmp/merik-data',
+  path.join(process.cwd(), 'data'),
+];
 
-function ensureDir() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+let DATA_DIR = CANDIDATES[0];
+let useMemoryOnly = false;
+let initialized = false;
+const memoryStore: LeaderboardEntry[] = [];
+
+function initDir() {
+  if (initialized) return;
+  initialized = true;
+  if (useMemoryOnly) return;
+  for (const dir of CANDIDATES) {
+    try {
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      const testFile = path.join(dir, '.write-test');
+      fs.writeFileSync(testFile, 'ok');
+      fs.unlinkSync(testFile);
+      DATA_DIR = dir;
+      return;
+    } catch {
+      continue;
+    }
+  }
+  useMemoryOnly = true;
 }
 
+const LB_FILE = () => path.join(DATA_DIR, 'leaderboard.json');
+
 export function getLeaderboard(): LeaderboardEntry[] {
-  ensureDir();
-  if (!fs.existsSync(LB_FILE)) return [];
+  initDir();
+  if (useMemoryOnly) return [...memoryStore];
   try {
-    return JSON.parse(fs.readFileSync(LB_FILE, 'utf-8'));
+    const fp = LB_FILE();
+    if (!fs.existsSync(fp)) return [];
+    return JSON.parse(fs.readFileSync(fp, 'utf-8'));
   } catch {
     return [];
   }
 }
 
 export function upsertLeaderboard(entry: LeaderboardEntry) {
-  ensureDir();
+  initDir();
   const lb = getLeaderboard();
   const idx = lb.findIndex((e) => e.wallet === entry.wallet);
   if (idx >= 0) {
@@ -37,7 +64,18 @@ export function upsertLeaderboard(entry: LeaderboardEntry) {
     lb.push(entry);
   }
   lb.sort((a, b) => b.score - a.score);
-  fs.writeFileSync(LB_FILE, JSON.stringify(lb, null, 2));
+  if (useMemoryOnly) {
+    memoryStore.length = 0;
+    memoryStore.push(...lb);
+    return lb;
+  }
+  try {
+    fs.writeFileSync(LB_FILE(), JSON.stringify(lb, null, 2));
+  } catch {
+    useMemoryOnly = true;
+    memoryStore.length = 0;
+    memoryStore.push(...lb);
+  }
   return lb;
 }
 
